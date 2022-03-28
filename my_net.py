@@ -45,6 +45,7 @@ class DenseLayer:
             raise ValueError("Layer should have at least 1 input")
         self.weights = np.random.uniform(-bound, bound, (n_inputs, self.n_neurons))
         self.biases = np.random.uniform(-bound, bound, (1, self.n_neurons))
+        #self.biases = np.zeros((1, self.n_neurons))  # raczej jednak to wyżej
 
         self.weights_acc_deltas = np.zeros((n_inputs, self.n_neurons))
         self.biases_acc_deltas = np.zeros((1, self.n_neurons))
@@ -90,35 +91,36 @@ class DenseLayer:
             raise ValueError
 
         next_errors = self.f_prim(calculated_input @ self.weights + self.biases) * differences  # shape = [1, n_neurons]
-        delta_weights = -calculated_input.transpose() @ next_errors  # shape = [n_inputs, n_neurons]
-        delta_biases = -next_errors  # shape = [1, n_neurons]
-        next_differences = next_errors @ self.weights.transpose()  # shape = [1, n_neurons] * [n_neurons, n_inputs] = [1, n_inputs]
-        self.weights_acc_deltas += delta_weights
-        self.biases_acc_deltas += delta_biases
+        delta_weights = -1 * calculated_input.transpose() @ next_errors  # shape = [n_inputs, n_neurons]
+        delta_biases = -1 * next_errors  # shape = [1, n_neurons]
+        next_differences = next_errors @ self.weights.transpose()  # shape = [1, n_inputs]
+        self.weights_acc_deltas = self.weights_acc_deltas + delta_weights
+        self.biases_acc_deltas = self.biases_acc_deltas + delta_biases
         return next_differences
 
-    def apply_learned_changes(self, eta: float = 0.001, normalization_method: str = None, ext_factor: float = 0.9):
-        if normalization_method is None:
-            self.weights_momentum = self.weights_acc_deltas
-            self.biases_momentum = self.biases_acc_deltas
-            self.weights += eta * self.weights_momentum
-            self.biases += eta * self.biases_momentum
-        elif normalization_method is "momentum":
+    def apply_learned_changes(self, eta: float, normalization_method: str, ext_factor: float, epsilon: float):
+        if normalization_method is None or normalization_method == "None":
+            self.weights = self.weights + eta * self.weights_acc_deltas
+            self.biases = self.biases + eta * self.biases_acc_deltas
+        elif normalization_method == "momentum" or normalization_method == "Momentum":
             if ext_factor < 0 or ext_factor >= 1:
                 raise ValueError("ext_factor (lambda) should be between 0 and 1.")
             self.weights_momentum = self.weights_acc_deltas + ext_factor * self.weights_momentum
             self.biases_momentum = self.biases_acc_deltas + ext_factor * self.biases_momentum
             self.weights += eta * self.weights_momentum
             self.biases += eta * self.biases_momentum
-        elif normalization_method is "RMSProp":
+        elif normalization_method == "RMSProp":
             if ext_factor < 0 or ext_factor >= 1:
                 raise ValueError("ext_factor (beta) should be between 0 and 1.")
             self.weights_momentum = (1 - ext_factor) * self.weights_acc_deltas ** 2 + ext_factor * self.weights_momentum
             self.biases_momentum = (1 - ext_factor) * self.biases_acc_deltas ** 2 + ext_factor * self.biases_momentum
-            self.weights += eta * self.weights_acc_deltas / np.sqrt(self.weights_momentum)
-            self.biases += eta * self.biases_acc_deltas / np.sqrt(self.biases_momentum)
+            self.weights += eta * self.weights_acc_deltas / (np.sqrt(self.weights_momentum) + epsilon)
+            self.biases += eta * self.biases_acc_deltas / (np.sqrt(self.biases_momentum) + epsilon)
         else:
             raise ValueError("normalization_method should be either None or \"momentum\" or \"RMSProp\".")
+
+        self.weights_acc_deltas = np.zeros_like(self.weights_acc_deltas)
+        self.biases_acc_deltas = np.zeros_like(self.biases_acc_deltas)
 
 
 class Net:
@@ -133,7 +135,8 @@ class Net:
 
     def backpropagate(self, input, output, eta: float = 0.001, required_mse: float = None, batch_size: int = None,
                       n_epochs: int = 1, verbose: int = 0,
-                      validation_input=None, validation_output=None):
+                      validation_input=None, validation_output=None,
+                      normalization_method: str = None, ext_factor: float = 0.9, epsilon: float = 1e-8):
         input = np.asarray(input)
         output = np.asarray(output)
         if validation_input is None:
@@ -175,10 +178,11 @@ class Net:
                 y = output[i, :]
                 y = y.reshape((1, np.shape(output)[1]))
 
-                self.backpropagate_once(x, y, eta)
+                self.backpropagate_once(x, y)
 
                 if (batch_size is not None and n_iters % batch_size == 0) or i == permutation[-1]:
-                    self.apply_learned_changes(eta=eta)
+                    self.apply_learned_changes(eta=eta, normalization_method=normalization_method,
+                                               ext_factor=ext_factor, epsilon=epsilon)
 
                     if required_mse is not None or print_mses:
                         current_mse = self.mse(validation_input, validation_output)
@@ -187,7 +191,8 @@ class Net:
                         print("MSE after {0} iterations (epoch {1}): {2}".format(str(n_iters), str(epoch),
                                                                                  str(current_mse)))
                     if print_absolute_weights:
-                        abs_weights_string = "Absolute weights sum on {0} iteration (epoch {1}): \n".format(str(n_iters), str(epoch + 1))
+                        abs_weights_string = "Absolute weights sum on {0} iteration (epoch {1}): \n".format(
+                            str(n_iters), str(epoch + 1))
                         for layer in self.layers:
                             layer_weights_sum = np.sum(np.abs(layer.weights)) + np.sum(np.abs(layer.biases))
                             abs_weights_string += "{:.2f}".format(layer_weights_sum) + ", "
@@ -202,7 +207,7 @@ class Net:
     def mse(self, input, output):
         return np.mean((self.predict(input) - output) ** 2)
 
-    def backpropagate_once(self, input, output, eta: float = 0.001):
+    def backpropagate_once(self, input, output):
         if np.shape(input) != (1, self.layers[0].n_inputs()):
             raise ValueError(
                 "Incorrect X shape, got:" + str(np.shape(input)) + ", expected: " + str((1, self.layers[0].n_inputs())))
@@ -235,6 +240,7 @@ class Net:
             layer.kernel_init(n_inputs, initializer)
             n_inputs = layer.n_neurons
 
-    def apply_learned_changes(self, eta: float = 0.001):
+    def apply_learned_changes(self, eta: float, normalization_method: str, ext_factor: float, epsilon: float):
         for layer in self.layers:
-            layer.apply_learned_changes(eta=eta)
+            layer.apply_learned_changes(eta=eta, normalization_method=normalization_method,
+                                        ext_factor=ext_factor, epsilon=epsilon)
