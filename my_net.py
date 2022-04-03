@@ -1,9 +1,19 @@
 import numpy as np
 
+
 sigmoid = lambda a: 1 / (1 + np.exp(-a))
 sigmoid_prim = lambda a: sigmoid(a) * (1 - sigmoid(a))
 identity = lambda a: a
 identity_prim = lambda a: 1
+
+
+def softmax(a):
+    expa = np.exp(a - np.max(a))
+    return expa / expa.sum(axis=0, keepdims=True)
+
+
+def softmax_prim(a):
+    return softmax(a) * (1 - softmax(a))
 
 
 class DenseLayer:
@@ -21,8 +31,11 @@ class DenseLayer:
         elif activation == "identity":
             self.f = identity
             self.f_prim = identity_prim
+        elif activation == "softmax":
+            self.f = softmax
+            self.f_prim = softmax_prim
         else:
-            raise ValueError("Incorrect activation function specified. Should be \"sigmoid\" or \"identity\"")
+            raise ValueError("Incorrect activation function specified. Should be one of [\"sigmoid\", \"identity\", \"softmax\"]")
 
         if weights is not None:
             if np.shape(weights)[1] != self.n_neurons:
@@ -45,7 +58,7 @@ class DenseLayer:
             raise ValueError("Layer should have at least 1 input")
         self.weights = np.random.uniform(-bound, bound, (n_inputs, self.n_neurons))
         self.biases = np.random.uniform(-bound, bound, (1, self.n_neurons))
-        #self.biases = np.zeros((1, self.n_neurons))  # raczej jednak to wyżej
+        # self.biases = np.zeros((1, self.n_neurons))  # raczej jednak to wyżej
 
         self.weights_acc_deltas = np.zeros((n_inputs, self.n_neurons))
         self.biases_acc_deltas = np.zeros((1, self.n_neurons))
@@ -91,6 +104,7 @@ class DenseLayer:
             raise ValueError
 
         next_errors = self.f_prim(calculated_input @ self.weights + self.biases) * differences  # shape = [1, n_neurons]
+
         delta_weights = -1 * calculated_input.transpose() @ next_errors  # shape = [n_inputs, n_neurons]
         delta_biases = -1 * next_errors  # shape = [1, n_neurons]
         next_differences = next_errors @ self.weights.transpose()  # shape = [1, n_inputs]
@@ -133,10 +147,11 @@ class Net:
     def add(self, layer):
         self.layers.append(layer)
 
-    def backpropagate(self, input, output, eta: float = 0.001, required_mse: float = None, batch_size: int = None,
-                      n_epochs: int = 1, verbose: int = 0,
+    def backpropagate(self, input, output, eta: float = 0.001, batch_size: int = None, n_epochs: int = 1,
+                      required_loss: float = None, raporting_loss: str = "mse",
                       validation_input=None, validation_output=None,
-                      normalization_method: str = None, ext_factor: float = 0.9, epsilon: float = 1e-8):
+                      normalization_method: str = None, ext_factor: float = 0.9, epsilon: float = 1e-8,
+                      verbose: int = 0):
         input = np.asarray(input)
         output = np.asarray(output)
         if validation_input is None:
@@ -148,7 +163,17 @@ class Net:
         else:
             validation_output = np.asarray(validation_output)
 
-        print_mses = verbose == 1 or verbose == 3
+        loss_calculator = lambda _input, _output : -1
+        if raporting_loss == "mse":
+            loss_calculator = self.mse
+        elif raporting_loss == "cross-entropy":
+            loss_calculator = self.crossentropy
+        elif raporting_loss == "f-score":
+            loss_calculator = self.fscore
+        else:
+            raise ValueError("Incorrect raporting loss function specified. Should be one of the following: [\"mse\", \"cross-entropy\", \"f-score\"]")
+
+        print_losses = verbose == 1 or verbose == 3
         print_absolute_weights = verbose == 2 or verbose == 3
 
         if np.shape(input)[1] != self.layers[0].n_inputs():
@@ -166,8 +191,8 @@ class Net:
 
         n_obs = np.shape(input)[0]
 
-        current_mse = required_mse
-        mses_list = []
+        current_loss = required_loss
+        losses_list = []
         n_iters = 0
         for epoch in range(n_epochs):
             permutation = np.random.permutation(n_obs)
@@ -184,12 +209,12 @@ class Net:
                     self.apply_learned_changes(eta=eta, normalization_method=normalization_method,
                                                ext_factor=ext_factor, epsilon=epsilon)
 
-                    if required_mse is not None or print_mses:
-                        current_mse = self.mse(validation_input, validation_output)
-                        mses_list.append((n_iters, current_mse))
-                    if print_mses:
-                        print("MSE after {0} iterations (epoch {1}): {2}".format(str(n_iters), str(epoch),
-                                                                                 str(current_mse)))
+                    if required_loss is not None or print_losses:
+                        current_loss = loss_calculator(validation_input, validation_output)
+                        losses_list.append((n_iters, current_loss))
+                    if print_losses:
+                        print("{0} after {1} iterations (epoch {2}): {3}".format(raporting_loss, str(n_iters), str(epoch),
+                                                                                 str(current_loss)))
                     if print_absolute_weights:
                         abs_weights_string = "Absolute weights sum on {0} iteration (epoch {1}): \n".format(
                             str(n_iters), str(epoch + 1))
@@ -198,14 +223,22 @@ class Net:
                             abs_weights_string += "{:.2f}".format(layer_weights_sum) + ", "
                         print(abs_weights_string)
 
-                    if required_mse is not None and current_mse <= required_mse:
-                        return current_mse, n_iters, mses_list
+                    if required_loss is not None and current_loss <= required_loss:
+                        return current_loss, n_iters, losses_list
 
-        current_mse = self.mse(validation_input, validation_output)
-        return current_mse, n_iters, mses_list
+        current_loss = self.mse(validation_input, validation_output)
+        return current_loss, n_iters, losses_list
 
     def mse(self, input, output):
         return np.mean((self.predict(input) - output) ** 2)
+
+    def crossentropy(self, input, output, epsilon=1e-12):
+        preds = np.clip(self.predict(input), epsilon, 1 - epsilon)
+        return -np.sum(output * np.log(preds)) # / preds.shape[0]
+
+    def fscore(self, input, output):
+        raise NotImplemented
+
 
     def backpropagate_once(self, input, output):
         if np.shape(input) != (1, self.layers[0].n_inputs()):
