@@ -1,10 +1,13 @@
 import numpy as np
 
-
 sigmoid = lambda a: 1 / (1 + np.exp(-a))
 sigmoid_prim = lambda a: sigmoid(a) * (1 - sigmoid(a))
 identity = lambda a: a
 identity_prim = lambda a: 1
+tanh = np.tanh
+tanh_prim = lambda a: 1 - tanh(a) ** 2
+reLU = lambda a: a * (a > 0)
+reLU_prim = lambda a: 1. * (a >= 0)
 
 
 def softmax(a):
@@ -34,8 +37,15 @@ class DenseLayer:
         elif activation == "softmax":
             self.f = softmax
             self.f_prim = softmax_prim
+        elif activation == "ReLU":
+            self.f = reLU
+            self.f_prim = reLU_prim
+        elif activation == "tanh":
+            self.f = tanh
+            self.f_prim = tanh_prim
         else:
-            raise ValueError("Incorrect activation function specified. Should be one of [\"sigmoid\", \"identity\", \"softmax\"]")
+            raise ValueError(
+                "Incorrect activation function specified. Should be one of [\"sigmoid\", \"identity\", \"softmax\"]")
 
         if weights is not None:
             if np.shape(weights)[1] != self.n_neurons:
@@ -57,8 +67,8 @@ class DenseLayer:
         if n_inputs < 1:
             raise ValueError("Layer should have at least 1 input")
         self.weights = np.random.uniform(-bound, bound, (n_inputs, self.n_neurons))
-        self.biases = np.random.uniform(-bound, bound, (1, self.n_neurons))
-        # self.biases = np.zeros((1, self.n_neurons))  # raczej jednak to wyżej
+        # self.biases = np.random.uniform(-bound, bound, (1, self.n_neurons))
+        self.biases = np.zeros((1, self.n_neurons))
 
         self.weights_acc_deltas = np.zeros((n_inputs, self.n_neurons))
         self.biases_acc_deltas = np.zeros((1, self.n_neurons))
@@ -126,7 +136,7 @@ class DenseLayer:
         elif normalization_method == "RMSProp":
             if ext_factor < 0 or ext_factor >= 1:
                 raise ValueError("ext_factor (beta) should be between 0 and 1.")
-            self.weights_momentum = (1 - ext_factor) * self.weights_acc_deltas ** 2 + ext_factor * self.weights_momentum
+            self.weights_fmomentum = (1 - ext_factor) * self.weights_acc_deltas ** 2 + ext_factor * self.weights_momentum
             self.biases_momentum = (1 - ext_factor) * self.biases_acc_deltas ** 2 + ext_factor * self.biases_momentum
             self.weights += eta * self.weights_acc_deltas / (np.sqrt(self.weights_momentum) + epsilon)
             self.biases += eta * self.biases_acc_deltas / (np.sqrt(self.biases_momentum) + epsilon)
@@ -163,7 +173,6 @@ class Net:
         else:
             validation_output = np.asarray(validation_output)
 
-        loss_calculator = lambda _input, _output : -1
         if raporting_loss == "mse":
             loss_calculator = self.mse
         elif raporting_loss == "cross-entropy":
@@ -171,7 +180,8 @@ class Net:
         elif raporting_loss == "f-score":
             loss_calculator = self.fscore
         else:
-            raise ValueError("Incorrect raporting loss function specified. Should be one of the following: [\"mse\", \"cross-entropy\", \"f-score\"]")
+            raise ValueError(
+                "Incorrect raporting loss function specified. Should be one of the following: [\"mse\", \"cross-entropy\", \"f-score\"]")
 
         print_losses = verbose == 1 or verbose == 3
         print_absolute_weights = verbose == 2 or verbose == 3
@@ -213,8 +223,9 @@ class Net:
                         current_loss = loss_calculator(validation_input, validation_output)
                         losses_list.append((n_iters, current_loss))
                     if print_losses:
-                        print("{0} after {1} iterations (epoch {2}): {3}".format(raporting_loss, str(n_iters), str(epoch),
-                                                                                 str(current_loss)))
+                        print(
+                            "{0} after {1} iterations (epoch {2}): {3}".format(raporting_loss, str(n_iters), str(epoch),
+                                                                               str(current_loss)))
                     if print_absolute_weights:
                         abs_weights_string = "Absolute weights sum on {0} iteration (epoch {1}): \n".format(
                             str(n_iters), str(epoch + 1))
@@ -234,11 +245,10 @@ class Net:
 
     def crossentropy(self, input, output, epsilon=1e-12):
         preds = np.clip(self.predict(input), epsilon, 1 - epsilon)
-        return -np.sum(output * np.log(preds)) # / preds.shape[0]
+        return -np.sum(output * np.log(preds))  # / preds.shape[0]
 
     def fscore(self, input, output):
         raise NotImplemented
-
 
     def backpropagate_once(self, input, output):
         if np.shape(input) != (1, self.layers[0].n_inputs()):
